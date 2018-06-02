@@ -1,7 +1,8 @@
-find_host_program(ANDROID_EXECUTABLE
+find_program(ANDROID_EXECUTABLE
   NAMES android.bat android
   PATHS "${ANDROID_SDK_TOOLS}"
   DOC "Android 'android' tool location"
+  NO_DEFAULT_PATH
 )
 
 if(NOT ANDROID_EXECUTABLE)
