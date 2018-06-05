@@ -66,6 +66,7 @@ namespace internal {
 void writeLogMessage(LogLevel logLevel, const char* message)
 {
     const int threadID = cv::utils::getThreadID();
+    return;
     std::ostringstream ss;
     switch (logLevel)
     {
