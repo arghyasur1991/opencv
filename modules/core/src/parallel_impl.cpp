@@ -47,6 +47,8 @@ DECLARE_CV_PAUSE
 #   define CV_PAUSE(v) do { for (int __delay = (v); __delay > 0; --__delay) { asm volatile("yield" ::: "memory"); } } while (0)
 # elif defined __GNUC__ && defined __arm__
 #   define CV_PAUSE(v) do { for (int __delay = (v); __delay > 0; --__delay) { asm volatile("" ::: "memory"); } } while (0)
+# elif defined __GNUC__ && defined __mips__ && __mips_isa_rev >= 2
+#   define CV_PAUSE(v) do { for (int __delay = (v); __delay > 0; --__delay) { asm volatile("pause" ::: "memory"); } } while (0)
 # elif defined __GNUC__ && defined __PPC64__
 #   define CV_PAUSE(v) do { for (int __delay = (v); __delay > 0; --__delay) { asm volatile("or 27,27,27" ::: "memory"); } } while (0)
 # else
@@ -186,9 +188,9 @@ public:
     pthread_t posix_thread;
     bool is_created;
 
-    volatile bool stop_thread;
+    std::atomic<bool> stop_thread;
 
-    volatile bool has_wake_signal;
+    std::atomic<bool> has_wake_signal;
 
     Ptr<ParallelJob> job;
 
@@ -337,7 +339,7 @@ public:
     std::atomic<int> completed_thread_count;  // number of threads completed any activities on this job
     int64 dummy2_[8];  // avoid cache-line reusing for the same atomics
 
-    volatile bool is_completed;  // std::atomic_flag ?
+    std::atomic<bool> is_completed;
 
     // TODO exception handling
 };
@@ -394,7 +396,7 @@ void WorkerThread::thread_body()
         if (CV_WORKER_ACTIVE_WAIT_THREADS_LIMIT == 0)
             allow_active_wait = true;
         Ptr<ParallelJob> j_ptr; swap(j_ptr, job);
-        has_wake_signal = false;    // TODO .store(false, std::memory_order_release)
+        has_wake_signal = false;
         pthread_mutex_unlock(&mutex);
 
         if (!stop_thread)

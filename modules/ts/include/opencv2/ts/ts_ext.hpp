@@ -13,6 +13,9 @@ void checkIppStatus();
 extern bool skipUnstableTests;
 extern bool runBigDataTests;
 extern int testThreads;
+
+void testSetUp();
+void testTearDown();
 }
 
 // check for required "opencv_test" namespace
@@ -24,10 +27,8 @@ extern int testThreads;
 
 #define CV__TEST_INIT \
     CV__TEST_NAMESPACE_CHECK \
-    cv::ipp::setIppStatus(0); \
-    cv::theRNG().state = cvtest::param_seed; \
-    cv::setNumThreads(cvtest::testThreads);
-#define CV__TEST_CLEANUP ::cvtest::checkIppStatus();
+    ::cvtest::testSetUp();
+#define CV__TEST_CLEANUP ::cvtest::testTearDown();
 #define CV__TEST_BODY_IMPL(name) \
     { \
        CV__TRACE_APP_FUNCTION_NAME(name); \
@@ -36,7 +37,7 @@ extern int testThreads;
           Body(); \
           CV__TEST_CLEANUP \
        } \
-       catch (cvtest::SkipTestException& e) \
+       catch (const cvtest::SkipTestException& e) \
        { \
           printf("[     SKIP ] %s\n", e.what()); \
        } \
@@ -44,13 +45,13 @@ extern int testThreads;
 
 
 #undef TEST
-#define TEST_(test_case_name, test_name, BODY_IMPL) \
-    class GTEST_TEST_CLASS_NAME_(test_case_name, test_name) : public ::testing::Test {\
+#define TEST_(test_case_name, test_name, parent_class, bodyMethodName, BODY_IMPL) \
+    class GTEST_TEST_CLASS_NAME_(test_case_name, test_name) : public parent_class {\
      public:\
       GTEST_TEST_CLASS_NAME_(test_case_name, test_name)() {}\
      private:\
       virtual void TestBody() CV_OVERRIDE;\
-      virtual void Body();\
+      virtual void bodyMethodName();\
       static ::testing::TestInfo* const test_info_ GTEST_ATTRIBUTE_UNUSED_;\
       GTEST_DISALLOW_COPY_AND_ASSIGN_(\
           GTEST_TEST_CLASS_NAME_(test_case_name, test_name));\
@@ -62,14 +63,14 @@ extern int testThreads;
             #test_case_name, #test_name, NULL, NULL, \
             ::testing::internal::CodeLocation(__FILE__, __LINE__), \
             (::testing::internal::GetTestTypeId()), \
-            ::testing::Test::SetUpTestCase, \
-            ::testing::Test::TearDownTestCase, \
+            parent_class::SetUpTestCase, \
+            parent_class::TearDownTestCase, \
             new ::testing::internal::TestFactoryImpl<\
                 GTEST_TEST_CLASS_NAME_(test_case_name, test_name)>);\
     void GTEST_TEST_CLASS_NAME_(test_case_name, test_name)::TestBody() BODY_IMPL( #test_case_name "_" #test_name ) \
-    void GTEST_TEST_CLASS_NAME_(test_case_name, test_name)::Body()
+    void GTEST_TEST_CLASS_NAME_(test_case_name, test_name)::bodyMethodName()
 
-#define TEST(test_case_name, test_name) TEST_(test_case_name, test_name, CV__TEST_BODY_IMPL)
+#define TEST(test_case_name, test_name) TEST_(test_case_name, test_name, ::testing::Test, Body, CV__TEST_BODY_IMPL)
 
 #define CV__TEST_BIGDATA_BODY_IMPL(name) \
     { \
@@ -84,7 +85,7 @@ extern int testThreads;
           Body(); \
           CV__TEST_CLEANUP \
        } \
-       catch (cvtest::SkipTestException& e) \
+       catch (const cvtest::SkipTestException& e) \
        { \
           printf("[     SKIP ] %s\n", e.what()); \
        } \
@@ -92,9 +93,9 @@ extern int testThreads;
 
 // Special type of tests which require / use or validate processing of huge amount of data (>= 2Gb)
 #if defined(_M_X64) || defined(__x86_64__) || defined(__aarch64__)
-#define BIGDATA_TEST(test_case_name, test_name) TEST_(BigData_ ## test_case_name, test_name, CV__TEST_BIGDATA_BODY_IMPL)
+#define BIGDATA_TEST(test_case_name, test_name) TEST_(BigData_ ## test_case_name, test_name, ::testing::Test, Body, CV__TEST_BIGDATA_BODY_IMPL)
 #else
-#define BIGDATA_TEST(test_case_name, test_name) TEST_(BigData_ ## test_case_name, DISABLED_ ## test_name, CV__TEST_BIGDATA_BODY_IMPL)
+#define BIGDATA_TEST(test_case_name, test_name) TEST_(BigData_ ## test_case_name, DISABLED_ ## test_name, ::testing::Test, Body, CV__TEST_BIGDATA_BODY_IMPL)
 #endif
 
 #undef TEST_F

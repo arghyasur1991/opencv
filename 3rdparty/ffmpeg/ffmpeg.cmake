@@ -1,16 +1,16 @@
-# Binaries branch name: ffmpeg/master_20180220
-# Binaries were created for OpenCV: 9819ebc0954c2df62943ebbd5936d325e5dc89e1
-ocv_update(FFMPEG_BINARIES_COMMIT "0a0e88972a7ea97708378d0488a65f83e7cc5e69")
-ocv_update(FFMPEG_FILE_HASH_BIN32 "b8120c07962d591e2e9071a1bf566fd0")
-ocv_update(FFMPEG_FILE_HASH_BIN64 "dc9c50e7b05482acc25d6ce0ac61bf1d")
-ocv_update(FFMPEG_FILE_HASH_CMAKE "3b90f67f4b429e77d3da36698cef700c")
+# Binaries branch name: ffmpeg/master_20190910
+# Binaries were created for OpenCV: bea2c7545243ba2dabce6badc94dd55894a8e5ca
+ocv_update(FFMPEG_BINARIES_COMMIT "197f87f7e811a9ded35d989b37e50501ff6afaa4")
+ocv_update(FFMPEG_FILE_HASH_BIN32 "ab380c9dde361f30dd3604f88eef6c48")
+ocv_update(FFMPEG_FILE_HASH_BIN64 "90260a4da737fc045c9279567313ee9d")
+ocv_update(FFMPEG_FILE_HASH_CMAKE "ad57c038ba34b868277ccbe6dd0f9602")
 
 function(download_win_ffmpeg script_var)
   set(${script_var} "" PARENT_SCOPE)
 
   set(ids BIN32 BIN64 CMAKE)
-  set(name_BIN32 "opencv_ffmpeg.dll")
-  set(name_BIN64 "opencv_ffmpeg_64.dll")
+  set(name_BIN32 "opencv_videoio_ffmpeg.dll")
+  set(name_BIN64 "opencv_videoio_ffmpeg_64.dll")
   set(name_CMAKE "ffmpeg_version.cmake")
 
   set(FFMPEG_DOWNLOAD_DIR "${OpenCV_BINARY_DIR}/3rdparty/ffmpeg")
@@ -40,3 +40,5 @@ if(OPENCV_INSTALL_FFMPEG_DOWNLOAD_SCRIPT)
   configure_file("${CMAKE_CURRENT_LIST_DIR}/ffmpeg-download.ps1.in" "${CMAKE_BINARY_DIR}/win-install/ffmpeg-download.ps1" @ONLY)
   install(FILES "${CMAKE_BINARY_DIR}/win-install/ffmpeg-download.ps1" DESTINATION "." COMPONENT libs)
 endif()
+
+ocv_install_3rdparty_licenses(ffmpeg license.txt readme.txt)

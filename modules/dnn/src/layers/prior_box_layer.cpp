@@ -43,6 +43,7 @@
 #include "../precomp.hpp"
 #include "layers_common.hpp"
 #include "../op_inf_engine.hpp"
+#include "../op_vkcom.hpp"
 #include <float.h>
 #include <algorithm>
 #include <cmath>
@@ -180,21 +181,20 @@ public:
     PriorBoxLayerImpl(const LayerParams &params)
     {
         setParamsFrom(params);
-        _minSize = getParameter<float>(params, "min_size", 0, false, 0);
         _flip = getParameter<bool>(params, "flip", 0, false, true);
         _clip = getParameter<bool>(params, "clip", 0, false, true);
         _bboxesNormalized = getParameter<bool>(params, "normalized_bbox", 0, false, true);
 
-        _aspectRatios.clear();
-
+        getParams("min_size", params, &_minSize);
         getAspectRatios(params);
         getVariance(params);
 
-        _maxSize = -1;
         if (params.has("max_size"))
         {
-            _maxSize = params.get("max_size").get<float>(0);
-            CV_Assert(_maxSize > _minSize);
+            getParams("max_size", params, &_maxSize);
+            CV_Assert(_minSize.size() == _maxSize.size());
+            for (int i = 0; i < _maxSize.size(); i++)
+                CV_Assert(_minSize[i] < _maxSize[i]);
         }
 
         std::vector<float> widths, heights;
@@ -213,25 +213,28 @@ public:
         }
         else
         {
-            CV_Assert(_minSize > 0);
-            _boxWidths.resize(1 + (_maxSize > 0 ? 1 : 0) + _aspectRatios.size());
-            _boxHeights.resize(_boxWidths.size());
-            _boxWidths[0] = _boxHeights[0] = _minSize;
-
-            int i = 1;
-            if (_maxSize > 0)
+            CV_Assert(!_minSize.empty());
+            for (int i = 0; i < _minSize.size(); ++i)
             {
-                // second prior: aspect_ratio = 1, size = sqrt(min_size * max_size)
-                _boxWidths[i] = _boxHeights[i] = sqrt(_minSize * _maxSize);
-                i += 1;
-            }
+                float minSize = _minSize[i];
+                CV_Assert(minSize > 0);
+                _boxWidths.push_back(minSize);
+                _boxHeights.push_back(minSize);
 
-            // rest of priors
-            for (size_t r = 0; r < _aspectRatios.size(); ++r)
-            {
-                float arSqrt = sqrt(_aspectRatios[r]);
-                _boxWidths[i + r] = _minSize * arSqrt;
-                _boxHeights[i + r] = _minSize / arSqrt;
+                if (_maxSize.size() > 0)
+                {
+                    float size = sqrt(minSize * _maxSize[i]);
+                    _boxWidths.push_back(size);
+                    _boxHeights.push_back(size);
+                }
+
+                // rest of priors
+                for (size_t r = 0; r < _aspectRatios.size(); ++r)
+                {
+                    float arSqrt = sqrt(_aspectRatios[r]);
+                    _boxWidths.push_back(minSize * arSqrt);
+                    _boxHeights.push_back(minSize / arSqrt);
+                }
             }
         }
         CV_Assert(_boxWidths.size() == _boxHeights.size());
@@ -254,7 +257,7 @@ public:
         }
         if (params.has("offset_h") || params.has("offset_w"))
         {
-            CV_Assert(!params.has("offset"), params.has("offset_h"), params.has("offset_w"));
+            CV_Assert_N(!params.has("offset"), params.has("offset_h"), params.has("offset_w"));
             getParams("offset_h", params, &_offsetsY);
             getParams("offset_w", params, &_offsetsX);
             CV_Assert(_offsetsX.size() == _offsetsY.size());
@@ -271,7 +274,9 @@ public:
     virtual bool supportBackend(int backendId) CV_OVERRIDE
     {
         return backendId == DNN_BACKEND_OPENCV ||
-               backendId == DNN_BACKEND_INFERENCE_ENGINE && haveInfEngine();
+               (backendId == DNN_BACKEND_INFERENCE_ENGINE && haveInfEngine() &&
+                   ( _explicitSizes || (_minSize.size() == 1 && _maxSize.size() <= 1)))
+               || (backendId == DNN_BACKEND_VKCOM && haveVulkan());
     }
 
     bool getMemoryShapes(const std::vector<MatShape> &inputs,
@@ -297,14 +302,18 @@ public:
         return false;
     }
 
-    void finalize(const std::vector<Mat*> &inputs, std::vector<Mat> &outputs) CV_OVERRIDE
+    void finalize(InputArrayOfArrays inputs_arr, OutputArrayOfArrays) CV_OVERRIDE
     {
-        CV_Assert(inputs.size() > 1, inputs[0]->dims == 4, inputs[1]->dims == 4);
-        int layerWidth = inputs[0]->size[3];
-        int layerHeight = inputs[0]->size[2];
+        std::vector<Mat> inputs;
+        inputs_arr.getMatVector(inputs);
 
-        int imageWidth = inputs[1]->size[3];
-        int imageHeight = inputs[1]->size[2];
+        CV_CheckGT(inputs.size(), (size_t)1, "");
+        CV_CheckEQ(inputs[0].dims, 4, ""); CV_CheckEQ(inputs[1].dims, 4, "");
+        int layerWidth = inputs[0].size[3];
+        int layerHeight = inputs[0].size[2];
+
+        int imageWidth = inputs[1].size[3];
+        int imageHeight = inputs[1].size[2];
 
         _stepY = _stepY == 0 ? (static_cast<float>(imageHeight) / layerHeight) : _stepY;
         _stepX = _stepX == 0 ? (static_cast<float>(imageWidth) / layerWidth) : _stepX;
@@ -369,15 +378,11 @@ public:
         // clip the prior's coordinate such that it is within [0, 1]
         if (_clip)
         {
-            Mat mat = outputs[0].getMat(ACCESS_READ);
-            int aspect_count = (_maxSize > 0) ? 1 : 0;
-            int offset = nthreads * 4 * _offsetsX.size() * (1 + aspect_count + _aspectRatios.size());
-            float* outputPtr = mat.ptr<float>() + offset;
-            int _outChannelSize = _layerHeight * _layerWidth * _numPriors * 4;
-            for (size_t d = 0; d < _outChannelSize; ++d)
-            {
-                outputPtr[d] = std::min<float>(std::max<float>(outputPtr[d], 0.), 1.);
-            }
+            ocl::Kernel kernel("clip", ocl::dnn::prior_box_oclsrc, opts);
+            size_t nthreads = _layerHeight * _layerWidth * _numPriors * 4;
+            if (!kernel.args((int)nthreads, ocl::KernelArg::PtrReadWrite(outputs[0]))
+                       .run(1, &nthreads, NULL, false))
+                return false;
         }
 
         // set the variance.
@@ -402,25 +407,26 @@ public:
         CV_TRACE_FUNCTION();
         CV_TRACE_ARG_VALUE(name, "name", name.c_str());
 
-        CV_OCL_RUN(IS_DNN_OPENCL_TARGET(preferableTarget) &&
-                   OCL_PERFORMANCE_CHECK(ocl::Device::getDefault().isIntel()),
+        CV_OCL_RUN(IS_DNN_OPENCL_TARGET(preferableTarget),
                    forward_ocl(inputs_arr, outputs_arr, internals_arr))
 
-        Layer::forward_fallback(inputs_arr, outputs_arr, internals_arr);
-    }
+        if (inputs_arr.depth() == CV_16S)
+        {
+            forward_fallback(inputs_arr, outputs_arr, internals_arr);
+            return;
+        }
 
-    void forward(std::vector<Mat*> &inputs, std::vector<Mat> &outputs, std::vector<Mat> &internals) CV_OVERRIDE
-    {
-        CV_TRACE_FUNCTION();
-        CV_TRACE_ARG_VALUE(name, "name", name.c_str());
+        std::vector<Mat> inputs, outputs;
+        inputs_arr.getMatVector(inputs);
+        outputs_arr.getMatVector(outputs);
 
         CV_Assert(inputs.size() == 2);
 
-        int _layerWidth = inputs[0]->size[3];
-        int _layerHeight = inputs[0]->size[2];
+        int _layerWidth = inputs[0].size[3];
+        int _layerHeight = inputs[0].size[2];
 
-        int _imageWidth = inputs[1]->size[3];
-        int _imageHeight = inputs[1]->size[2];
+        int _imageWidth = inputs[1].size[3];
+        int _imageHeight = inputs[1].size[2];
 
         float* outputPtr = outputs[0].ptr<float>();
         float _boxWidth, _boxHeight;
@@ -456,8 +462,8 @@ public:
         outputPtr = outputs[0].ptr<float>(0, 1);
         if(_variance.size() == 1)
         {
-            Mat secondChannel(outputs[0].size[2], outputs[0].size[3], CV_32F, outputPtr);
-            secondChannel.setTo(Scalar(_variance[0]));
+            Mat secondChannel(1, outputs[0].size[2], CV_32F, outputPtr);
+            secondChannel.setTo(Scalar::all(_variance[0]));
         }
         else
         {
@@ -479,72 +485,85 @@ public:
         }
     }
 
-    virtual Ptr<BackendNode> initInfEngine(const std::vector<Ptr<BackendWrapper> >&) CV_OVERRIDE
+    virtual Ptr<BackendNode> initVkCom(const std::vector<Ptr<BackendWrapper> > &input) CV_OVERRIDE
     {
-#ifdef HAVE_INF_ENGINE
-        InferenceEngine::LayerParams lp;
-        lp.name = name;
-        lp.type = _explicitSizes ? "PriorBoxClustered" : "PriorBox";
-        lp.precision = InferenceEngine::Precision::FP32;
-        std::shared_ptr<InferenceEngine::CNNLayer> ieLayer(new InferenceEngine::CNNLayer(lp));
-
-        if (_explicitSizes)
-        {
-            CV_Assert(!_boxWidths.empty(), !_boxHeights.empty(),
-                      _boxWidths.size() == _boxHeights.size());
-            ieLayer->params["width"] = format("%f", _boxWidths[0]);
-            ieLayer->params["height"] = format("%f", _boxHeights[0]);
-            for (int i = 1; i < _boxWidths.size(); ++i)
-            {
-                ieLayer->params["width"] += format(",%f", _boxWidths[i]);
-                ieLayer->params["height"] += format(",%f", _boxHeights[i]);
-            }
-        }
-        else
-        {
-            ieLayer->params["min_size"] = format("%f", _minSize);
-            ieLayer->params["max_size"] = _maxSize > 0 ? format("%f", _maxSize) : "";
-
-            if (!_aspectRatios.empty())
-            {
-                ieLayer->params["aspect_ratio"] = format("%f", _aspectRatios[0]);
-                for (int i = 1; i < _aspectRatios.size(); ++i)
-                    ieLayer->params["aspect_ratio"] += format(",%f", _aspectRatios[i]);
-            }
-        }
-
-        ieLayer->params["flip"] = "0";  // We already flipped aspect ratios.
-        ieLayer->params["clip"] = _clip ? "1" : "0";
-
-        CV_Assert(!_variance.empty());
-        ieLayer->params["variance"] = format("%f", _variance[0]);
-        for (int i = 1; i < _variance.size(); ++i)
-            ieLayer->params["variance"] += format(",%f", _variance[i]);
-
-        if (_stepX == _stepY)
-        {
-            ieLayer->params["step"] = format("%f", _stepX);
-            ieLayer->params["step_h"] = "0.0";
-            ieLayer->params["step_w"] = "0.0";
-        }
-        else
-        {
-            ieLayer->params["step"] = "0.0";
-            ieLayer->params["step_h"] = format("%f", _stepY);
-            ieLayer->params["step_w"] = format("%f", _stepX);
-        }
-        CV_Assert(_offsetsX.size() == 1, _offsetsY.size() == 1, _offsetsX[0] == _offsetsY[0]);
-        ieLayer->params["offset"] = format("%f", _offsetsX[0]);
-
-        return Ptr<BackendNode>(new InfEngineBackendNode(ieLayer));
-#endif  // HAVE_INF_ENGINE
+#ifdef HAVE_VULKAN
+        std::shared_ptr<vkcom::OpBase> op(new vkcom::OpPriorBox(_stepX, _stepY,
+                                                                _clip, _numPriors,
+                                                                _variance, _offsetsX,
+                                                                _offsetsY, _boxWidths,
+                                                                _boxHeights));
+        return Ptr<BackendNode>(new VkComBackendNode(input, op));
+#endif // HAVE_VULKAN
         return Ptr<BackendNode>();
     }
+
+#ifdef HAVE_INF_ENGINE
+    virtual Ptr<BackendNode> initInfEngine(const std::vector<Ptr<BackendWrapper> >&) CV_OVERRIDE
+    {
+        if (_explicitSizes)
+        {
+            InferenceEngine::Builder::PriorBoxClusteredLayer ieLayer(name);
+            ieLayer.setSteps({_stepY, _stepX});
+
+            CV_CheckEQ(_offsetsX.size(), (size_t)1, ""); CV_CheckEQ(_offsetsY.size(), (size_t)1, ""); CV_CheckEQ(_offsetsX[0], _offsetsY[0], "");
+            ieLayer.setOffset(_offsetsX[0]);
+
+            ieLayer.setClip(_clip);
+            ieLayer.setFlip(false);  // We already flipped aspect ratios.
+
+            InferenceEngine::Builder::Layer l = ieLayer;
+
+            CV_Assert_N(!_boxWidths.empty(), !_boxHeights.empty(), !_variance.empty());
+            CV_Assert(_boxWidths.size() == _boxHeights.size());
+            l.getParameters()["width"] = _boxWidths;
+            l.getParameters()["height"] = _boxHeights;
+            l.getParameters()["variance"] = _variance;
+            return Ptr<BackendNode>(new InfEngineBackendNode(l));
+        }
+        else
+        {
+            InferenceEngine::Builder::PriorBoxLayer ieLayer(name);
+
+            CV_Assert(!_explicitSizes);
+            ieLayer.setMinSize(_minSize[0]);
+            if (!_maxSize.empty())
+                ieLayer.setMaxSize(_maxSize[0]);
+
+            CV_CheckEQ(_offsetsX.size(), (size_t)1, ""); CV_CheckEQ(_offsetsY.size(), (size_t)1, ""); CV_CheckEQ(_offsetsX[0], _offsetsY[0], "");
+            ieLayer.setOffset(_offsetsX[0]);
+
+            ieLayer.setClip(_clip);
+            ieLayer.setFlip(false);  // We already flipped aspect ratios.
+
+            InferenceEngine::Builder::Layer l = ieLayer;
+            if (_stepX == _stepY)
+            {
+                l.getParameters()["step"] = _stepX;
+                l.getParameters()["step_h"] = 0.0f;
+                l.getParameters()["step_w"] = 0.0f;
+            }
+            else
+            {
+                l.getParameters()["step"] = 0.0f;
+                l.getParameters()["step_h"] = _stepY;
+                l.getParameters()["step_w"] = _stepX;
+            }
+            if (!_aspectRatios.empty())
+            {
+                l.getParameters()["aspect_ratio"] = _aspectRatios;
+            }
+            CV_Assert(!_variance.empty());
+            l.getParameters()["variance"] = _variance;
+            return Ptr<BackendNode>(new InfEngineBackendNode(l));
+        }
+    }
+#endif  // HAVE_INF_ENGINE
 
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,
                            const std::vector<MatShape> &outputs) const CV_OVERRIDE
     {
-        (void)outputs; // suppress unused variable warning
+        CV_UNUSED(outputs); // suppress unused variable warning
         long flops = 0;
 
         for (int i = 0; i < inputs.size(); i++)
@@ -556,8 +575,8 @@ public:
     }
 
 private:
-    float _minSize;
-    float _maxSize;
+    std::vector<float> _minSize;
+    std::vector<float> _maxSize;
 
     float _stepX, _stepY;
 

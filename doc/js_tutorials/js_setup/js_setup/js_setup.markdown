@@ -7,6 +7,9 @@ Installing Emscripten
 
 [Emscripten](https://github.com/kripken/emscripten) is an LLVM-to-JavaScript compiler. We will use Emscripten to build OpenCV.js.
 
+@note
+While this describes installation of required tools from scratch, there's a section below also describing an alternative procedure to perform the same build using docker containers which is often easier.
+
 To Install Emscripten, follow instructions of [Emscripten SDK](https://kripken.github.io/emscripten-site/docs/getting_started/downloads.html).
 
 For example:
@@ -103,3 +106,52 @@ Building OpenCV.js from Source
 
     @note
     It requires `node` installed in your development environment.
+
+Building OpenCV.js with Docker
+---------------------------------------
+
+Alternatively, the same build can be can be accomplished using [docker](https://www.docker.com/) containers which is often easier and more reliable, particularly in non linux systems. You only need to install [docker](https://www.docker.com/) on your system and use a popular container that provides a clean well tested environment for emscripten builds like this, that already has latest versions of all the necessary tools installed.
+
+So, make sure [docker](https://www.docker.com/) is installed in your system and running. The following shell script should work in linux and MacOS:
+
+@code{.bash}
+git clone https://github.com/opencv/opencv.git
+cd opencv
+docker run --rm --workdir /code -v "$PWD":/code "trzeci/emscripten:latest" python ./platforms/js/build_js.py build
+@endcode
+
+In Windows use the following PowerShell command:
+
+@code{.bash}
+docker run --rm --workdir /code -v "$(get-location):/code" "trzeci/emscripten:latest" python ./platforms/js/build_js.py build
+@endcode
+
+@warning
+The example uses latest version of emscripten. If the build fails you should try a version that is known to work fine which is `1.38.32` using the following command:
+
+@code{.bash}
+docker run --rm --workdir /code -v "$PWD":/code "trzeci/emscripten:sdk-tag-1.38.32-64bit" python ./platforms/js/build_js.py build
+@endcode
+
+### Building the documentation with Docker
+
+To build the documentation `doxygen` needs to be installed. Create a file named `Dockerfile` with the following content:
+
+```
+FROM trzeci/emscripten:sdk-tag-1.38.32-64bit
+
+RUN apt-get update -y
+RUN apt-get install -y doxygen
+```
+
+Then we build the docker image and name it `opencv-js-doc` with the following command (that needs to be run only once):
+
+@code{.bash}
+docker build . -t opencv-js-doc
+@endcode
+
+Now run the build command again, this time using the new image and passing `--build_doc`:
+
+@code{.bash}
+docker run --rm --workdir /code -v "$PWD":/code "opencv-js-doc" python ./platforms/js/build_js.py build --build_doc
+@endcode

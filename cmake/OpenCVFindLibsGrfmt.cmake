@@ -211,21 +211,22 @@ endif()
 
 # --- OpenEXR (optional) ---
 if(WITH_OPENEXR)
-  if(BUILD_OPENEXR)
-    ocv_clear_vars(OPENEXR_FOUND)
-  else()
+  ocv_clear_vars(HAVE_OPENEXR)
+  if(NOT BUILD_OPENEXR)
     include("${OpenCV_SOURCE_DIR}/cmake/OpenCVFindOpenEXR.cmake")
   endif()
 
-  if(NOT OPENEXR_FOUND)
+  if(OPENEXR_FOUND)
+    set(HAVE_OPENEXR YES)
+  else()
     ocv_clear_vars(OPENEXR_INCLUDE_PATHS OPENEXR_LIBRARIES OPENEXR_ILMIMF_LIBRARY OPENEXR_VERSION)
 
     set(OPENEXR_LIBRARIES IlmImf)
-    set(OPENEXR_ILMIMF_LIBRARY IlmImf)
     add_subdirectory("${OpenCV_SOURCE_DIR}/3rdparty/openexr")
+    if(OPENEXR_VERSION)  # check via TARGET doesn't work
+      set(HAVE_OPENEXR YES)
+    endif()
   endif()
-
-  set(HAVE_OPENEXR YES)
 endif()
 
 # --- GDAL (optional) ---
@@ -267,4 +268,9 @@ if(WITH_IMGCODEC_PXM)
   set(HAVE_IMGCODEC_PXM ON)
 elseif(DEFINED WITH_IMGCODEC_PXM)
   set(HAVE_IMGCODEC_PXM OFF)
+endif()
+if(WITH_IMGCODEC_PFM)
+  set(HAVE_IMGCODEC_PFM ON)
+elseif(DEFINED WITH_IMGCODEC_PFM)
+  set(HAVE_IMGCODEC_PFM OFF)
 endif()
